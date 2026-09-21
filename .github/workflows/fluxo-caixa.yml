@@ -1,0 +1,38 @@
+name: Fluxo de caixa - envio diario
+
+# Dispara a geracao + envio por email do relatorio de fluxo de caixa. O
+# servico no Render faz todo o trabalho de verdade (busca no Omie, monta
+# o HTML, manda o email) - este workflow so acorda ele no horario certo,
+# porque o plano gratuito do Render "dorme" sozinho depois de ~15min sem
+# uso e nao tem agendador interno (mesmo padrao do workflow do pedido de
+# sabado da Verdemar, repo pedidos-omie).
+on:
+  schedule:
+    # 7:00 America/Sao_Paulo = 10:00 UTC (Brasil nao tem mais horario de
+    # verao desde 2019, entao o offset e sempre -3). Dias uteis (seg a
+    # sex) - o financeiro nao aprova pagamento no fim de semana.
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:  # permite disparo manual (ex.: testar sem esperar amanha de manha)
+
+jobs:
+  disparar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar webhook do servico no Render
+        run: |
+          # TROQUE a URL abaixo pela URL real do seu servico Render depois
+          # do deploy (ver README.md - "Passo 4. Criar o servico no
+          # Render"). Fica assim: https://<nome-do-servico>.onrender.com
+          URL="https://SUBSTITUA-PELO-NOME-DO-SEU-SERVICO.onrender.com/webhook/fluxo-caixa"
+          RESPOSTA=$(curl -sS --max-time 240 --retry 1 --retry-delay 15 \
+            -w '\n%{http_code}' \
+            -X POST "$URL" \
+            -H "X-Webhook-Secret: ${{ secrets.FLUXO_CAIXA_WEBHOOK_SECRET }}")
+          HTTP_CODE=$(echo "$RESPOSTA" | tail -n1)
+          BODY=$(echo "$RESPOSTA" | sed '$d')
+          echo "HTTP status: $HTTP_CODE"
+          echo "Corpo da resposta: $BODY"
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "::error::Webhook retornou HTTP $HTTP_CODE"
+            exit 1
+          fi
