@@ -6,6 +6,13 @@ name: Fluxo de caixa - envio diario
 # porque o plano gratuito do Render "dorme" sozinho depois de ~15min sem
 # uso e nao tem agendador interno (mesmo padrao do workflow do pedido de
 # sabado da Verdemar, repo pedidos-omie).
+#
+# O webhook responde IMEDIATAMENTE (so confirma que recebeu) e processa
+# em segundo plano - por isso este workflow dispara e depois FICA
+# CONSULTANDO GET /status ate ver um resultado novo, em vez de manter
+# uma unica chamada HTTP aberta esperando (isso estourava o proxy do
+# Render com "500 Internal Server Error" generico antes do processamento
+# de verdade terminar - descoberto na pratica, 2026-09-21).
 on:
   schedule:
     # 7:00 America/Sao_Paulo = 10:00 UTC (Brasil nao tem mais horario de
@@ -18,23 +25,44 @@ jobs:
   disparar:
     runs-on: ubuntu-latest
     steps:
-      - name: Chamar webhook do servico no Render
+      - name: Disparar o relatorio e aguardar o resultado
         run: |
-          URL="https://fluxo-caixa-omie-p4ag.onrender.com/webhook/fluxo-caixa"
-          # max-time generoso (9min): soma o tempo do Render acordar do
-          # sono (~50s+) com a busca de dados de 5 empresas na API do
-          # Omie - testado localmente em ~2min, mas o Render pode ser
-          # mais lento. Sem --retry: se passou de 9min de verdade, tentar
-          # de novo do zero so dobraria a espera sem ajudar.
-          RESPOSTA=$(curl -sS --max-time 540 \
-            -w '\n%{http_code}' \
-            -X POST "$URL" \
-            -H "X-Webhook-Secret: ${{ secrets.FLUXO_CAIXA_WEBHOOK_SECRET }}")
-          HTTP_CODE=$(echo "$RESPOSTA" | tail -n1)
-          BODY=$(echo "$RESPOSTA" | sed '$d')
-          echo "HTTP status: $HTTP_CODE"
-          echo "Corpo da resposta: $BODY"
+          BASE="https://fluxo-caixa-omie-p4ag.onrender.com"
+          SECRET="${{ secrets.FLUXO_CAIXA_WEBHOOK_SECRET }}"
+
+          BASELINE=$(curl -sS --max-time 60 "$BASE/status" | jq -r '.quando // "nenhum"')
+          echo "Ultima execucao registrada antes deste disparo: $BASELINE"
+
+          echo "Disparando o webhook (o Render pode estar dormindo - isso pode levar ~1min so pra acordar)..."
+          DISPARO=$(curl -sS --max-time 90 -w '\n%{http_code}' \
+            -X POST "$BASE/webhook/fluxo-caixa" \
+            -H "X-Webhook-Secret: $SECRET")
+          HTTP_CODE=$(echo "$DISPARO" | tail -n1)
+          BODY=$(echo "$DISPARO" | sed '$d')
+          echo "Disparo HTTP $HTTP_CODE: $BODY"
           if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "::error::Webhook retornou HTTP $HTTP_CODE"
+            echo "::error::Webhook recusou o disparo (HTTP $HTTP_CODE)"
             exit 1
           fi
+
+          echo "Disparo aceito - aguardando o processamento terminar (ate 8 minutos)..."
+          for i in $(seq 1 32); do
+            sleep 15
+            RESP=$(curl -sS --max-time 30 "$BASE/status" || echo '{}')
+            QUANDO=$(echo "$RESP" | jq -r '.quando // "nenhum"')
+            STATUS=$(echo "$RESP" | jq -r '.status // "desconhecido"')
+            echo "  [tentativa $i] quando=$QUANDO status=$STATUS"
+            if [ "$QUANDO" != "$BASELINE" ] && [ "$QUANDO" != "nenhum" ]; then
+              if [ "$STATUS" = "ok" ]; then
+                echo "Relatorio gerado e enviado com sucesso:"
+                echo "$RESP" | jq .
+                exit 0
+              fi
+              if [ "$STATUS" = "erro" ]; then
+                echo "::error::Falha ao gerar/enviar o relatorio: $(echo "$RESP" | jq -r '.detalhe')"
+                exit 1
+              fi
+            fi
+          done
+          echo "::error::Passou de 8 minutos sem terminar - confira os Logs do servico no Render, ou abra $BASE/status no navegador."
+          exit 1

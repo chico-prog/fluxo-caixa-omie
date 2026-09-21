@@ -14,6 +14,15 @@ gratis do Render dorme sozinho depois de uns 15min parado e nao tem
 agendador interno, por isso precisa de algo externo "batendo na porta"
 no horario certo.
 
+O webhook responde IMEDIATAMENTE (so confirma que recebeu) e faz o
+trabalho pesado (buscar no Omie - leva minutos - montar o relatorio,
+mandar o email) em segundo plano, depois da resposta ja ter sido
+enviada (FastAPI BackgroundTasks). Descoberto na pratica, 2026-09-21:
+manter a conexao HTTP aberta esperando o processamento inteiro terminar
+estourava o proxy do Render, que devolvia "500 Internal Server Error"
+generico (nao vinha do nosso codigo Python - o corpo nao era o nosso
+JSON de erro) antes do trabalho terminar de verdade.
+
 IMPORTANTE (plano gratis, sem disco persistente): o quadro "Divergencias
 de ontem" do relatorio depende de um log (logs/previsto_diario.csv) que
 precisa sobreviver de um dia pro outro - no Render free ele se perde
@@ -24,8 +33,10 @@ envio diario do relatorio por email nao depende disso, funciona normal.
 """
 
 import os
+import traceback
+from datetime import datetime
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 
 import relatorio_diario
 from email_sender import EmailError, enviar_relatorio
@@ -35,6 +46,13 @@ app = FastAPI()
 WEBHOOK_SECRET = os.getenv("FLUXO_CAIXA_WEBHOOK_SECRET", "")
 SAIDA_HTML = os.path.join("saida", "fluxo_caixa.html")
 
+# Status da ultima execucao em background - so pra dar visibilidade via
+# GET /status (o webhook em si so confirma "recebido", nao espera o
+# processamento terminar pra responder). Fica em memoria: some se o
+# servico reiniciar/dormir, mas serve pra conferir manualmente se o
+# ultimo disparo deu certo sem precisar abrir os Logs do Render.
+ultimo_status = {"quando": None, "status": "nunca rodou", "detalhe": ""}
+
 
 @app.get("/")
 def raiz():
@@ -43,17 +61,25 @@ def raiz():
     return {"status": "ok", "servico": "fluxo-caixa-omie"}
 
 
-@app.post("/webhook/fluxo-caixa")
-def disparar_fluxo_caixa(x_webhook_secret: str = Header(default="")):
-    if not WEBHOOK_SECRET:
-        raise HTTPException(status_code=500, detail="FLUXO_CAIXA_WEBHOOK_SECRET nao configurado no servidor")
-    if x_webhook_secret != WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="webhook secret invalido")
+@app.get("/status")
+def status():
+    """Resultado da ultima vez que o relatorio foi gerado/enviado."""
+    return ultimo_status
 
+
+def _processar_e_enviar():
+    """Roda DEPOIS da resposta HTTP do webhook ja ter sido enviada (ver
+    BackgroundTasks abaixo) - erros aqui nao viram HTTP 500 pra quem
+    chamou (o GitHub Actions ja recebeu 200 e seguiu a vida), soamente
+    fica registrado em ultimo_status (GET /status) e no log do Render."""
+    global ultimo_status
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     try:
         resultado = relatorio_diario.gerar(saida=SAIDA_HTML)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"falha ao gerar relatorio: {e}")
+        traceback.print_exc()
+        ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"falha ao gerar relatorio: {e}"}
+        return
 
     fmt = relatorio_diario._fmt
     resumo = (
@@ -68,6 +94,22 @@ def disparar_fluxo_caixa(x_webhook_secret: str = Header(default="")):
     try:
         enviar_relatorio(resultado["saida"], resumo)
     except EmailError as e:
-        raise HTTPException(status_code=500, detail=f"relatorio gerado, mas falha ao enviar email: {e}")
+        traceback.print_exc()
+        ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"relatorio gerado, mas falha ao enviar email: {e}"}
+        return
 
-    return {"status": "ok", **{k: v for k, v in resultado.items() if k != "saida"}}
+    ultimo_status = {
+        "quando": agora, "status": "ok",
+        "detalhe": {k: v for k, v in resultado.items() if k != "saida"},
+    }
+
+
+@app.post("/webhook/fluxo-caixa")
+def disparar_fluxo_caixa(background_tasks: BackgroundTasks, x_webhook_secret: str = Header(default="")):
+    if not WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="FLUXO_CAIXA_WEBHOOK_SECRET nao configurado no servidor")
+    if x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="webhook secret invalido")
+
+    background_tasks.add_task(_processar_e_enviar)
+    return {"status": "recebido", "mensagem": "gerando o relatorio e enviando por email em segundo plano - confira GET /status em alguns minutos"}
