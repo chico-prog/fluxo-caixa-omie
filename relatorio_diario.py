@@ -452,7 +452,7 @@ TEMPLATE = """<!doctype html>
 """
 
 
-def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None):
+def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None, rastrear_divergencias=True):
     """Uma UNICA coleta por empresa (financeiro.coletar_dados_empresa),
     usada pra derivar as 3 visoes do relatorio (saldo por conta de hoje,
     detalhe por fornecedor de hoje, projecao dos proximos horizonte_dias
@@ -463,7 +463,17 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None)
     (fechamento de ontem, via financeiro.buscar_saldo_atual/nSaldoAnterior
     - nao usa saldo "ao vivo" de hoje, que pode estar incompleto), previsao
     (pagar/receber/projetado) = D+0 (hoje). O horizonte acumulado comeca
-    em D+0 (hoje) e vai ate D+horizonte_dias-1."""
+    em D+0 (hoje) e vai ate D+horizonte_dias-1.
+
+    rastrear_divergencias=False pula o log de previsto (logs/
+    previsto_diario.csv) e a comparacao contra o realizado - usado nesta
+    copia (servico Render) porque o disco nao e persistente aqui, entao
+    o log nunca sobrevive de um dia pro outro mesmo (ver README.md); sem
+    isso o quadro "Divergencias de ontem" sempre sairia vazio do mesmo
+    jeito, so que gastando chamadas extras de API no Omie (buscar
+    movimentos baixados) a toa. Decisao de 2026-09-21, pra reduzir carga
+    na API depois de testes que sobrecarregaram o Omie com disparos
+    simultaneos."""
     entidades = config.entidades_configuradas()
     if not entidades:
         raise RuntimeError("nenhuma conta com credenciais preenchidas no .env")
@@ -485,7 +495,7 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None)
     bordero_pagar = []
     previsto_hoje = []
     divergencias_ontem = []
-    previsto_ontem_por_empresa = _carregar_previsto(PREVISTO_LOG, data_saldo_str)
+    previsto_ontem_por_empresa = _carregar_previsto(PREVISTO_LOG, data_saldo_str) if rastrear_divergencias else {}
 
     for ent in entidades:
         nome = ent["nome"]
@@ -637,7 +647,8 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None)
             dias_linha.append({"data": d, "a_pagar": ap, "a_receber": ar, "saldo_projetado": running})
         periodo[nome] = {"saldo_inicial": saldo_empresa, "dias": dias_linha}
 
-    _registrar_previsto(PREVISTO_LOG, previsto_hoje)
+    if rastrear_divergencias:
+        _registrar_previsto(PREVISTO_LOG, previsto_hoje)
     linhas_divergencias = _linhas_divergencias(divergencias_ontem, bool(previsto_ontem_por_empresa))
 
     nomes_empresas = [ent["nome"] for ent in entidades]

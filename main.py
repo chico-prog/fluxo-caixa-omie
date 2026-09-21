@@ -33,6 +33,7 @@ envio diario do relatorio por email nao depende disso, funciona normal.
 """
 
 import os
+import threading
 import traceback
 from datetime import datetime
 
@@ -52,6 +53,15 @@ SAIDA_HTML = os.path.join("saida", "fluxo_caixa.html")
 # servico reiniciar/dormir, mas serve pra conferir manualmente se o
 # ultimo disparo deu certo sem precisar abrir os Logs do Render.
 ultimo_status = {"quando": None, "status": "nunca rodou", "detalhe": ""}
+
+# Trava simples pra impedir dois disparos rodando AO MESMO TEMPO -
+# descoberto na pratica, 2026-09-21: dois disparos simultaneos (ex:
+# reteste manual em cima de um disparo que ainda nao tinha terminado)
+# fazem chamadas duplicadas/concorrentes pra API do Omie, que tem
+# protecao contra "consumo redundante" e passa a bloquear/atrasar tudo
+# em cadeia. Sem lock global (nao roda em varios processos aqui, so
+# threads do mesmo worker), suficiente pro uso real (1 disparo por dia).
+_processando = threading.Lock()
 
 
 @app.get("/")
@@ -73,35 +83,46 @@ def _processar_e_enviar():
     chamou (o GitHub Actions ja recebeu 200 e seguiu a vida), soamente
     fica registrado em ultimo_status (GET /status) e no log do Render."""
     global ultimo_status
-    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    try:
-        resultado = relatorio_diario.gerar(saida=SAIDA_HTML)
-    except Exception as e:
-        traceback.print_exc()
-        ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"falha ao gerar relatorio: {e}"}
+    if not _processando.acquire(blocking=False):
+        # ja tem um disparo rodando - nao inicia outro em cima (ver
+        # comentario do _processando la em cima).
+        print("[AVISO] disparo ignorado - ja existe um processamento em andamento")
         return
-
-    fmt = relatorio_diario._fmt
-    resumo = (
-        f"Saldo D-1 (fechamento de ontem): R$ {fmt(resultado['saldo_total'])}\n"
-        f"A pagar hoje: R$ {fmt(resultado['pagar_total'])}\n"
-        f"A receber hoje: R$ {fmt(resultado['receber_total'])}\n"
-        f"Contas negativas hoje: {resultado['n_negativas']}\n"
-        f"Divergencias de ontem (previsto x realizado): {resultado['n_divergencias']}\n"
-        "\nRelatorio completo em anexo - abra no navegador pra ver todas as tabelas.\n"
-    )
-
     try:
-        enviar_relatorio(resultado["saida"], resumo)
-    except EmailError as e:
-        traceback.print_exc()
-        ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"relatorio gerado, mas falha ao enviar email: {e}"}
-        return
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        try:
+            # rastrear_divergencias=False: sem disco persistente aqui, o
+            # log de previsto nunca sobrevive de um dia pro outro mesmo -
+            # sem isso so economiza chamadas de API no Omie (ver
+            # docstring de relatorio_diario.gerar).
+            resultado = relatorio_diario.gerar(saida=SAIDA_HTML, rastrear_divergencias=False)
+        except Exception as e:
+            traceback.print_exc()
+            ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"falha ao gerar relatorio: {e}"}
+            return
 
-    ultimo_status = {
-        "quando": agora, "status": "ok",
-        "detalhe": {k: v for k, v in resultado.items() if k != "saida"},
-    }
+        fmt = relatorio_diario._fmt
+        resumo = (
+            f"Saldo D-1 (fechamento de ontem): R$ {fmt(resultado['saldo_total'])}\n"
+            f"A pagar hoje: R$ {fmt(resultado['pagar_total'])}\n"
+            f"A receber hoje: R$ {fmt(resultado['receber_total'])}\n"
+            f"Contas negativas hoje: {resultado['n_negativas']}\n"
+            "\nRelatorio completo em anexo - abra no navegador pra ver todas as tabelas.\n"
+        )
+
+        try:
+            enviar_relatorio(resultado["saida"], resumo)
+        except EmailError as e:
+            traceback.print_exc()
+            ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"relatorio gerado, mas falha ao enviar email: {e}"}
+            return
+
+        ultimo_status = {
+            "quando": agora, "status": "ok",
+            "detalhe": {k: v for k, v in resultado.items() if k != "saida"},
+        }
+    finally:
+        _processando.release()
 
 
 @app.post("/webhook/fluxo-caixa")
@@ -110,6 +131,9 @@ def disparar_fluxo_caixa(background_tasks: BackgroundTasks, x_webhook_secret: st
         raise HTTPException(status_code=500, detail="FLUXO_CAIXA_WEBHOOK_SECRET nao configurado no servidor")
     if x_webhook_secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="webhook secret invalido")
+
+    if _processando.locked():
+        return {"status": "ja_processando", "mensagem": "ja existe um disparo em andamento - aguarde ele terminar (confira GET /status) antes de disparar de novo"}
 
     background_tasks.add_task(_processar_e_enviar)
     return {"status": "recebido", "mensagem": "gerando o relatorio e enviando por email em segundo plano - confira GET /status em alguns minutos"}
