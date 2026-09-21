@@ -20,10 +20,7 @@ jobs:
     steps:
       - name: Chamar webhook do servico no Render
         run: |
-          # TROQUE a URL abaixo pela URL real do seu servico Render depois
-          # do deploy (ver README.md - "Passo 4. Criar o servico no
-          # Render"). Fica assim: https://<nome-do-servico>.onrender.com
-          URL="https://SUBSTITUA-PELO-NOME-DO-SEU-SERVICO.onrender.com/webhook/fluxo-caixa"
+          URL="https://fluxo-caixa-omie-p4ag.onrender.com/webhook/fluxo-caixa"
           RESPOSTA=$(curl -sS --max-time 240 --retry 1 --retry-delay 15 \
             -w '\n%{http_code}' \
             -X POST "$URL" \
