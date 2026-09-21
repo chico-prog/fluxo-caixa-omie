@@ -21,7 +21,12 @@ jobs:
       - name: Chamar webhook do servico no Render
         run: |
           URL="https://fluxo-caixa-omie-p4ag.onrender.com/webhook/fluxo-caixa"
-          RESPOSTA=$(curl -sS --max-time 240 --retry 1 --retry-delay 15 \
+          # max-time generoso (9min): soma o tempo do Render acordar do
+          # sono (~50s+) com a busca de dados de 5 empresas na API do
+          # Omie - testado localmente em ~2min, mas o Render pode ser
+          # mais lento. Sem --retry: se passou de 9min de verdade, tentar
+          # de novo do zero so dobraria a espera sem ajudar.
+          RESPOSTA=$(curl -sS --max-time 540 \
             -w '\n%{http_code}' \
             -X POST "$URL" \
             -H "X-Webhook-Secret: ${{ secrets.FLUXO_CAIXA_WEBHOOK_SECRET }}")
