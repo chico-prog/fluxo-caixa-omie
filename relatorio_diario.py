@@ -355,11 +355,36 @@ TEMPLATE = """<!doctype html>
   footer p{{font-size:12px; color:var(--ink-faint); line-height:1.6; margin:0; max-width:70ch;}}
   footer p b{{color:var(--ink-muted);}}
   @media (max-width:760px){{ .detail-grid{{grid-template-columns:1fr;}} }}
-  @media (max-width:640px){{ .kpis{{grid-template-columns:repeat(2,1fr);}} .empresa-totais{{display:none;}} header{{flex-direction:column; align-items:flex-start;}} .asof{{text-align:left;}} }}
+  @media (max-width:640px){{ .kpis{{grid-template-columns:repeat(2,1fr);}} .empresa-totais{{display:none;}} header{{flex-direction:column; align-items:flex-start;}} .asof{{text-align:left;}} .print-btn{{position:static; margin-bottom:16px; width:100%;}} }}
+  .print-btn{{
+    position:fixed; top:20px; right:20px; z-index:50;
+    font-family:"IBM Plex Sans", sans-serif; font-size:12.5px; font-weight:600;
+    padding:9px 18px; border-radius:8px; border:1px solid var(--accent);
+    background:var(--accent); color:#fff; cursor:pointer;
+    box-shadow:0 2px 10px rgba(0,0,0,.18);
+  }}
+  .print-btn:hover{{ filter:brightness(1.08); }}
+  @media print{{
+    :root{{
+      --bg:#f5f7f5; --surface:#ffffff; --surface-2:#eef2ef;
+      --ink:#12231d; --ink-muted:#5c6e66; --ink-faint:#8a9a92;
+      --line:#dbe4de; --line-strong:#c3d0c8;
+      --accent:#0b6b53; --accent-soft:#e3f1ec;
+      --critical:#a92419; --critical-soft:#fbeae8; --critical-line:#e7b8b1;
+      --warning:#93590a; --warning-soft:#fbf1de;
+    }}
+    .print-btn{{display:none !important;}}
+    body{{background:#fff;}}
+    tr{{break-inside:avoid;}}
+    .section-title{{break-after:avoid;}}
+    .empresa-head{{break-after:avoid;}}
+  }}
 </style>
 </head>
 <body>
 <div class="page">
+
+  <button class="print-btn" type="button" onclick="window.print()">Imprimir / Salvar PDF</button>
 
   <header>
     <div>
