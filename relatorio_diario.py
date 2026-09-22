@@ -365,6 +365,7 @@ TEMPLATE = """<!doctype html>
   }}
   .print-btn:hover{{ filter:brightness(1.08); }}
   @media print{{
+    @page{{ size:A4 landscape; margin:10mm; }}
     :root{{
       --bg:#f5f7f5; --surface:#ffffff; --surface-2:#eef2ef;
       --ink:#12231d; --ink-muted:#5c6e66; --ink-faint:#8a9a92;
@@ -374,8 +375,41 @@ TEMPLATE = """<!doctype html>
       --warning:#93590a; --warning-soft:#fbf1de;
     }}
     .print-btn{{display:none !important;}}
-    body{{background:#fff;}}
+    body{{background:#fff; padding:0; font-size:11px;}}
+    .page{{max-width:none;}}
+    header{{padding-bottom:12px; margin-bottom:16px;}}
+    h1{{font-size:22px; margin-top:4px;}}
+    .subline{{font-size:11px;}}
+    .kpis{{margin-bottom:16px;}}
+    .kpi{{padding:10px 12px;}}
+    .kpi .value{{font-size:16px;}}
+    .empresa{{margin-bottom:14px;}}
+    .section-title{{margin:16px 0 8px;}}
+    /* .tablewrap tinha rolagem horizontal pra tela - em papel nao tem
+       "rolar", so corta o que passar da largura, por isso e essencial
+       desligar aqui e compensar com fonte/espacamento bem menores. */
+    .tablewrap{{overflow-x:visible !important;}}
+    table{{font-size:10px;}}
+    th{{padding:5px 8px 4px; font-size:8.5px;}}
+    td{{padding:5px 8px; font-size:10px;}}
+    .empresa-totais{{font-size:10.5px; gap:14px;}}
+    /* table.horizon (16 colunas: Dia + 5 empresas x Pagar/Receber/Saldo)
+       nao tinha table-layout:fixed - crescia livre pro tamanho do
+       conteudo (por isso rolava na tela) e isso vazava pra fora da
+       pagina no PDF, cortando dado de verdade (achado real, 2026-09-22).
+       IMPORTANTE: font-size tem que mirar TH/TD direto, nao a <table> -
+       o CSS de tela ja define font-size em cada td/th, entao um
+       font-size na <table> nunca chega por heranca (outro achado real
+       da mesma sessao de debug). */
+    table.horizon{{table-layout:fixed;}}
+    table.horizon th, table.horizon td{{font-size:8px !important; padding:2px 3px; overflow:hidden;}}
+    table.bordero td:nth-child(3), table.bordero td:nth-child(4){{white-space:normal;}}
+    .listcard-head, .list-empresa-head{{padding:8px 12px 3px;}}
+    .list-row{{padding:4px 12px;}}
+    footer{{margin-top:16px; padding-top:10px;}}
+    footer p{{font-size:9.5px;}}
     tr{{break-inside:avoid;}}
+    .empresa{{break-inside:avoid;}}
     .section-title{{break-after:avoid;}}
     .empresa-head{{break-after:avoid;}}
   }}
