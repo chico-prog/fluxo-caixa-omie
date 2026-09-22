@@ -138,11 +138,16 @@ def _e_conta_operacional(descricao):
     TIPO (palavras-chave), nao so pelo prefixo "Z." - a convencao "Z." nao
     e seguida em todas as empresas (achado real: "Itaú Unibanco -
     Aplicação" da Pura Fruta nao tem "Z." mas e uma aplicacao igual as
-    outras)."""
+    outras). Mesma coisa com "PDV": so pegar "[pdv]" (colchetes) deixava
+    passar "PDV - IFOOD" e "PDV - 99FOOD" (Matriz, Frutamix) - contas
+    ATIVAS de marketplace contando R$36k+ como saldo operacional
+    disponivel sem ser (achado real, 2026-09-22, o Chico nao reconheceu
+    o saldo da conta "PDV - IFOOD" no relatorio). Substring "pdv" pega
+    qualquer formatacao (colchetes, hifen, com/sem espaco)."""
     d_lower = (descricao or "").lower()
     if d_lower.startswith("z."):
         return False
-    if "[pdv]" in d_lower:
+    if "pdv" in d_lower:
         return False
     if "rende f" in d_lower:  # "Rende Facil"/"Rende Fácil"
         return False
