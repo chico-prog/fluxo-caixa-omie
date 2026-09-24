@@ -49,7 +49,7 @@ BANCOS = {
 ENTIDADES = [
     {"nome": "Matriz (Frutamix)", "sufixo": "MATRIZ"},
     {"nome": "Filial DF", "sufixo": "FILIAL_DF"},
-    {"nome": "Filial JSL", "sufixo": "FILIAL_JSL"},
+    {"nome": "Steria Soares", "sufixo": "STERIA_SOARES"},
     {"nome": "Pura Fruta", "sufixo": "PURA_FRUTA"},
     {"nome": "Frozen Log", "sufixo": "FROZEN_LOG"},
     {"nome": "EasyIce", "sufixo": "EASYICE"},
