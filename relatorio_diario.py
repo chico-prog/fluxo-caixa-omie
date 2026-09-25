@@ -31,6 +31,7 @@ import html
 import os
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import config
@@ -556,7 +557,16 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
     divergencias_ontem = []
     previsto_ontem_por_empresa = _carregar_previsto(PREVISTO_LOG, data_saldo_str) if rastrear_divergencias else {}
 
-    for ent in entidades:
+    def _processar_empresa(ent):
+        """Coleta e processa os dados de UMA empresa - roda em paralelo
+        entre empresas (ver ThreadPoolExecutor abaixo), ja que cada uma
+        bate numa conta Omie diferente (credenciais separadas) e nao tem
+        NENHUMA dependencia entre si. Motivo: em serie, a extracao
+        completa (5 empresas) passou de 8 minutos no Render (achado
+        real, 2026-09-25) e o proprio Render reiniciou o servico no meio
+        do processamento, antes de terminar - e-mail nunca saiu. Em
+        paralelo, o tempo total fica perto do tempo da empresa MAIS
+        LENTA, nao da soma de todas."""
         nome = ent["nome"]
         print(f"--- {nome} ---")
         dados = financeiro.coletar_dados_empresa(ent)
@@ -592,6 +602,8 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
         itens_receber_hoje = []
         pagar_por_dia = {}
         receber_por_dia = {}
+        bordero_pagar_empresa = []
+        previsto_hoje_empresa = []
 
         for t in dados["pagar_abertos"]:
             d = t.get("data_previsao")
@@ -612,14 +624,14 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
                     "categoria": categoria_desc,
                     "valor": valor,
                 })
-                bordero_pagar.append({
+                bordero_pagar_empresa.append({
                     "empresa": nome,
                     "banco": banco_por_ncc.get(ncc, "-"),
                     "fornecedor": fornecedor,
                     "nf": nf,
                     "valor": valor,
                 })
-                previsto_hoje.append({
+                previsto_hoje_empresa.append({
                     "data": previsao, "tipo": "pagar", "empresa": nome,
                     "codigo_lancamento_omie": t.get("codigo_lancamento_omie") or "",
                     "fornecedor": fornecedor, "numero_documento": nf,
@@ -644,34 +656,27 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
                     "categoria": categoria_desc,
                     "valor": valor,
                 })
-                previsto_hoje.append({
+                previsto_hoje_empresa.append({
                     "data": previsao, "tipo": "receber", "empresa": nome,
                     "codigo_lancamento_omie": t.get("codigo_lancamento_omie") or "",
                     "fornecedor": fornecedor, "numero_documento": t.get("numero_documento") or "-",
                     "categoria": categoria_desc, "valor": valor,
                 })
 
-        if nome in previsto_ontem_por_empresa:
+        divergencias_empresa = []
+        previsto_ontem_empresa = previsto_ontem_por_empresa.get(nome)
+        if previsto_ontem_empresa:
             try:
                 divergencias_empresa = financeiro.comparar_previsto_realizado(
-                    client, nome, data_saldo_str, previsto_ontem_por_empresa[nome],
+                    client, nome, data_saldo_str, previsto_ontem_empresa,
                     contas_correntes_desc, dados["categorias_por_codigo"],
                 )
             except OmieError as e:
                 print(f"  [AVISO {nome}] nao consegui comparar previsto x realizado de ontem ({e})")
-                divergencias_empresa = []
-            divergencias_ontem.extend(divergencias_empresa)
-            for div in divergencias_empresa:
-                _log(DIVERGENCIAS_LOG, {
-                    "data": div["data"], "tipo": div["tipo"], "empresa": div["empresa"],
-                    "fornecedor": div["fornecedor"], "numero_documento": div["numero_documento"],
-                    "valor_previsto": div["valor"], "valor_realizado": div["valor_realizado"],
-                    "status": div["status"],
-                })
 
         a_pagar_hoje = sum(v["a_pagar"] for v in contas_info.values()) + outras_pagar_hoje
         a_receber_hoje = sum(v["a_receber"] for v in contas_info.values()) + outras_receber_hoje
-        totais_por_empresa[nome] = {
+        totais = {
             "saldo_atual_omie": saldo_empresa,
             "a_pagar_previsto": a_pagar_hoje,
             "a_receber_previsto": a_receber_hoje,
@@ -686,16 +691,13 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
             }
             for info in contas_info.values()
         ]
-        n_negativas += sum(1 for c in contas_ent if c["saldo_projetado"] < 0)
+        n_negativas_empresa = sum(1 for c in contas_ent if c["saldo_projetado"] < 0)
         if outras_pagar_hoje or outras_receber_hoje:
             contas_ent.append({
                 "conta": "(outras contas - nao operacionais/outro banco)", "banco": "",
                 "saldo_atual": None, "a_pagar_previsto": outras_pagar_hoje,
                 "a_receber_previsto": outras_receber_hoje, "saldo_projetado": None,
             })
-        blocos.append(_bloco_empresa(nome, contas_ent, totais_por_empresa[nome]))
-        listas_pagar.append(_bloco_lista_empresa(nome, a_pagar_hoje, itens_pagar_hoje))
-        listas_receber.append(_bloco_lista_empresa(nome, a_receber_hoje, itens_receber_hoje))
 
         running = saldo_empresa
         dias_linha = []
@@ -704,7 +706,41 @@ def gerar(saida=SAIDA_PADRAO, horizonte_dias=HORIZONTE_DIAS, codigos_banco=None,
             ar = receber_por_dia.get(d, 0.0)
             running = running + ar - ap
             dias_linha.append({"data": d, "a_pagar": ap, "a_receber": ar, "saldo_projetado": running})
-        periodo[nome] = {"saldo_inicial": saldo_empresa, "dias": dias_linha}
+
+        return {
+            "nome": nome,
+            "totais": totais,
+            "bloco_html": _bloco_empresa(nome, contas_ent, totais),
+            "lista_pagar_html": _bloco_lista_empresa(nome, a_pagar_hoje, itens_pagar_hoje),
+            "lista_receber_html": _bloco_lista_empresa(nome, a_receber_hoje, itens_receber_hoje),
+            "n_negativas": n_negativas_empresa,
+            "bordero_pagar": bordero_pagar_empresa,
+            "previsto_hoje": previsto_hoje_empresa,
+            "divergencias": divergencias_empresa,
+            "periodo": {"saldo_inicial": saldo_empresa, "dias": dias_linha},
+        }
+
+    with ThreadPoolExecutor(max_workers=len(entidades)) as executor:
+        resultados = list(executor.map(_processar_empresa, entidades))
+
+    for r in resultados:
+        nome = r["nome"]
+        totais_por_empresa[nome] = r["totais"]
+        blocos.append(r["bloco_html"])
+        listas_pagar.append(r["lista_pagar_html"])
+        listas_receber.append(r["lista_receber_html"])
+        n_negativas += r["n_negativas"]
+        bordero_pagar.extend(r["bordero_pagar"])
+        previsto_hoje.extend(r["previsto_hoje"])
+        divergencias_ontem.extend(r["divergencias"])
+        periodo[nome] = r["periodo"]
+        for div in r["divergencias"]:
+            _log(DIVERGENCIAS_LOG, {
+                "data": div["data"], "tipo": div["tipo"], "empresa": div["empresa"],
+                "fornecedor": div["fornecedor"], "numero_documento": div["numero_documento"],
+                "valor_previsto": div["valor"], "valor_realizado": div["valor_realizado"],
+                "status": div["status"],
+            })
 
     if rastrear_divergencias:
         _registrar_previsto(PREVISTO_LOG, previsto_hoje)
