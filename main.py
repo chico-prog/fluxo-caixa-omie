@@ -30,6 +30,12 @@ toda vez que o servico dorme e acorda de novo, entao esse quadro sempre
 sai vazio quando rodado por aqui (decisao do Chico, 2026-09-21: aceitar
 isso por enquanto em troca de nao pagar por um plano com disco). O
 envio diario do relatorio por email nao depende disso, funciona normal.
+
+PDF em anexo (pdf_generator.py): gerado com Chromium headless
+(Playwright) - risco conhecido de estourar os 512MB de RAM do plano
+gratis (decisao do Chico, 2026-09-25: tentar mesmo assim). Se a geracao
+do PDF falhar, o email ainda sai, so com o HTML (ver _processar_e_enviar
+abaixo - PdfError nao e fatal).
 """
 
 import os
@@ -41,11 +47,13 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 
 import relatorio_diario
 from email_sender import EmailError, enviar_relatorio
+from pdf_generator import PdfError, gerar_pdf
 
 app = FastAPI()
 
 WEBHOOK_SECRET = os.getenv("FLUXO_CAIXA_WEBHOOK_SECRET", "")
 SAIDA_HTML = os.path.join("saida", "fluxo_caixa.html")
+SAIDA_PDF = os.path.join("saida", "fluxo_caixa.pdf")
 
 # Status da ultima execucao em background - so pra dar visibilidade via
 # GET /status (o webhook em si so confirma "recebido", nao espera o
@@ -101,17 +109,28 @@ def _processar_e_enviar():
             ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"falha ao gerar relatorio: {e}"}
             return
 
+        caminho_pdf = None
+        try:
+            gerar_pdf(resultado["saida"], SAIDA_PDF)
+            caminho_pdf = SAIDA_PDF
+        except PdfError as e:
+            # nao fatal - manda so o HTML mesmo, em vez de perder o
+            # email inteiro por causa do PDF (ver pdf_generator.py -
+            # risco conhecido de estourar memoria no plano gratis).
+            traceback.print_exc()
+            print(f"[AVISO] nao consegui gerar o PDF, mandando so o HTML ({e})")
+
         fmt = relatorio_diario._fmt
         resumo = (
             f"Saldo D-1 (fechamento de ontem): R$ {fmt(resultado['saldo_total'])}\n"
             f"A pagar hoje: R$ {fmt(resultado['pagar_total'])}\n"
             f"A receber hoje: R$ {fmt(resultado['receber_total'])}\n"
             f"Contas negativas hoje: {resultado['n_negativas']}\n"
-            "\nRelatorio completo em anexo - abra no navegador pra ver todas as tabelas.\n"
+            "\nRelatorio completo em anexo - abra no navegador (HTML) pra ver todas as tabelas com os botoes funcionando, ou o PDF pra imprimir/arquivar.\n"
         )
 
         try:
-            enviar_relatorio(resultado["saida"], resumo)
+            enviar_relatorio(resultado["saida"], resumo, caminho_pdf=caminho_pdf)
         except EmailError as e:
             traceback.print_exc()
             ultimo_status = {"quando": agora, "status": "erro", "detalhe": f"relatorio gerado, mas falha ao enviar email: {e}"}

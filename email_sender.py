@@ -17,6 +17,7 @@ Variaveis de ambiente esperadas (ver .env.example):
   EMAIL_TO       - destinatarios separados por virgula
 """
 
+import mimetypes
 import os
 import smtplib
 import socket
@@ -45,13 +46,24 @@ def _getaddrinfo_so_ipv4(host, port, family=0, type=0, proto=0, flags=0):
     return _getaddrinfo_original(host, port, socket.AF_INET, type, proto, flags)
 
 
-def enviar_relatorio(caminho_html, resumo_texto, assunto=None):
-    """Manda o relatorio (arquivo HTML em `caminho_html`) por email, com
-    `resumo_texto` no corpo (texto simples) e o HTML completo em anexo -
-    anexado, nao inline, porque o CSS/fontes do relatorio nao sobrevivem
-    bem ao "sanitizador" de HTML da maioria dos webmails (Gmail, Outlook
-    cortam <style>/<script>); anexado, o destinatario abre no navegador e
-    ve o relatorio de verdade, com os botoes/tabelas funcionando."""
+def _anexar_arquivo(msg, caminho, nome_arquivo=None):
+    tipo, _ = mimetypes.guess_type(caminho)
+    subtipo = tipo.split("/", 1)[1] if tipo else "octet-stream"
+    with open(caminho, "rb") as f:
+        anexo = MIMEApplication(f.read(), _subtype=subtipo)
+    anexo.add_header("Content-Disposition", "attachment", filename=nome_arquivo or os.path.basename(caminho))
+    msg.attach(anexo)
+
+
+def enviar_relatorio(caminho_html, resumo_texto, assunto=None, caminho_pdf=None):
+    """Manda o relatorio por email, com `resumo_texto` no corpo (texto
+    simples) e o(s) arquivo(s) em anexo - anexado, nao inline, porque o
+    CSS/fontes do relatorio nao sobrevivem bem ao "sanitizador" de HTML
+    da maioria dos webmails (Gmail, Outlook cortam <style>/<script>);
+    anexado, o destinatario abre no navegador e ve o relatorio de
+    verdade, com os botoes/tabelas funcionando. `caminho_pdf` e
+    opcional - se informado, manda tambem (gerado por
+    pdf_generator.gerar_pdf a partir do mesmo HTML)."""
     host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     port = int(os.getenv("SMTP_PORT", "587"))
     usuario = os.getenv("SMTP_USER", "")
@@ -70,10 +82,9 @@ def enviar_relatorio(caminho_html, resumo_texto, assunto=None):
     msg["To"] = ", ".join(destinatarios)
     msg.attach(MIMEText(resumo_texto, "plain", "utf-8"))
 
-    with open(caminho_html, "rb") as f:
-        anexo = MIMEApplication(f.read(), _subtype="html")
-    anexo.add_header("Content-Disposition", "attachment", filename="fluxo_caixa.html")
-    msg.attach(anexo)
+    _anexar_arquivo(msg, caminho_html, "fluxo_caixa.html")
+    if caminho_pdf:
+        _anexar_arquivo(msg, caminho_pdf, "fluxo_caixa.pdf")
 
     socket.getaddrinfo = _getaddrinfo_so_ipv4
     try:
