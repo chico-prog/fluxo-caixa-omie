@@ -19,6 +19,7 @@ Variaveis de ambiente esperadas (ver .env.example):
 
 import os
 import smtplib
+import socket
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -26,6 +27,22 @@ from email.mime.text import MIMEText
 
 class EmailError(Exception):
     pass
+
+
+_getaddrinfo_original = socket.getaddrinfo
+
+
+def _getaddrinfo_so_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    """Substitui socket.getaddrinfo global, temporariamente, filtrando pra
+    so IPv4 (AF_INET). O Render (e varios PaaS) tem IPv6 "ligado" no SO
+    mas sem rota de saida de verdade, e o Gmail tem registro AAAA (IPv6)
+    - sem isso, smtplib tenta conectar via IPv6 primeiro e cai com
+    "OSError: Network is unreachable" (achado real, 2026-09-25, direto
+    do log de producao do Render). Continua usando o HOSTNAME (nao IP)
+    na conexao - so a resolucao de endereco fica restrita a IPv4 - pra
+    nao quebrar a validacao de certificado TLS do STARTTLS (que confere
+    o hostname, nao o IP)."""
+    return _getaddrinfo_original(host, port, socket.AF_INET, type, proto, flags)
 
 
 def enviar_relatorio(caminho_html, resumo_texto, assunto=None):
@@ -58,7 +75,11 @@ def enviar_relatorio(caminho_html, resumo_texto, assunto=None):
     anexo.add_header("Content-Disposition", "attachment", filename="fluxo_caixa.html")
     msg.attach(anexo)
 
-    with smtplib.SMTP(host, port, timeout=60) as smtp:
-        smtp.starttls()
-        smtp.login(usuario, senha)
-        smtp.sendmail(remetente, destinatarios, msg.as_string())
+    socket.getaddrinfo = _getaddrinfo_so_ipv4
+    try:
+        with smtplib.SMTP(host, port, timeout=60) as smtp:
+            smtp.starttls()
+            smtp.login(usuario, senha)
+            smtp.sendmail(remetente, destinatarios, msg.as_string())
+    finally:
+        socket.getaddrinfo = _getaddrinfo_original
